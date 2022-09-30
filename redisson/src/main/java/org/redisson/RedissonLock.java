@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class RedissonLock extends RedissonBaseLock {
 
-    protected long internalLockLeaseTime;
+    protected long internalLockLeaseTime; // 默认值 30s
 
     protected final LockPubSub pubSub;
 
@@ -62,9 +62,13 @@ public class RedissonLock extends RedissonBaseLock {
         return prefixName("redisson_lock__channel", getRawName());
     }
 
+    /**
+     * 获取锁,如果锁不可用，则当前线程将被禁用以用于线程调度目的并处于休眠状态，直到获得锁为止。
+     */
     @Override
     public void lock() {
         try {
+            // 尝试获取锁
             lock(-1, null, false);
         } catch (InterruptedException e) {
             throw new IllegalStateException();
@@ -93,8 +97,9 @@ public class RedissonLock extends RedissonBaseLock {
 
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
+        // 尝试获取锁，并返回过期事件 没有设置加锁时长，ttl = null
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
-        // lock acquired
+        // lock acquired 已经获取锁
         if (ttl == null) {
             return;
         }
@@ -178,6 +183,7 @@ public class RedissonLock extends RedissonBaseLock {
         CompletionStage<Long> f = ttlRemainingFuture.thenApply(ttlRemaining -> {
             // lock acquired
             if (ttlRemaining == null) {
+                // 当 leaseTime = -1 时，会加入看门狗续期机制 本质上也就是一个定时任务
                 if (leaseTime > 0) {
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {

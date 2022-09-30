@@ -124,7 +124,8 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         if (ee == null) {
             return;
         }
-        
+
+        // 续约的定时任务
         Timeout task = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
             @Override
             public void run(Timeout timeout) throws Exception {
