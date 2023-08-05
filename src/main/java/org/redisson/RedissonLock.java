@@ -71,6 +71,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         super(commandExecutor, name);
         this.commandExecutor = commandExecutor;
         this.id = id;
+        System.out.println( "redisson uuid" +id);
     }
 
     protected String getEntryName() {
