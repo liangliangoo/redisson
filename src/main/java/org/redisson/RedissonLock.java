@@ -55,7 +55,8 @@ import io.netty.util.internal.PlatformDependent;
 public class RedissonLock extends RedissonExpirable implements RLock {
 
     private final Logger log = LoggerFactory.getLogger(RedissonLock.class);
-    
+
+    // 默认 锁的最大持有时间 单位为秒
     public static final long LOCK_EXPIRATION_INTERVAL_SECONDS = 30;
     private static final ConcurrentMap<String, Timeout> expirationRenewalMap = PlatformDependent.newConcurrentHashMap();
     protected long internalLockLeaseTime = TimeUnit.SECONDS.toMillis(LOCK_EXPIRATION_INTERVAL_SECONDS);
@@ -111,8 +112,17 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         lockInterruptibly(-1, null);
     }
 
+    /**
+     * 当前线程获取分布式锁
+     * @param leaseTime the maximum time to hold the lock after granting it,
+     *        before automatically releasing it if it hasn't already been released by invoking <code>unlock</code>.
+     *        If leaseTime is -1, hold the lock until explicitly unlocked.
+     * @param unit the time unit of the {@code leaseTime} argument
+     * @throws InterruptedException
+     */
     @Override
     public void lockInterruptibly(long leaseTime, TimeUnit unit) throws InterruptedException {
+        // 返回的redis key 的存活时长
         Long ttl = tryAcquire(leaseTime, unit);
         // lock acquired
         if (ttl == null) {
@@ -143,7 +153,13 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         }
 //        get(lockAsync(leaseTime, unit));
     }
-    
+
+    /**
+     * 获取强 分布式锁的结果
+     * @param leaseTime
+     * @param unit
+     * @return
+     */
     private Long tryAcquire(long leaseTime, TimeUnit unit) {
         return get(tryAcquireAsync(leaseTime, unit, Thread.currentThread().getId()));
     }
@@ -171,17 +187,20 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
 
     private <T> Future<Long> tryAcquireAsync(long leaseTime, TimeUnit unit, long threadId) {
+        // 如果业务方指定锁时长的时候，直接尝试获取锁
         if (leaseTime != -1) {
             return tryLockInnerAsync(leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         }
+        // 如果没有指定加锁时长的话 锁定30s
         Future<Long> ttlRemainingFuture = tryLockInnerAsync(LOCK_EXPIRATION_INTERVAL_SECONDS, TimeUnit.SECONDS, threadId, RedisCommands.EVAL_LONG);
+        // 当lua 执行出结果以后 添加一个监听时间
         ttlRemainingFuture.addListener(new FutureListener<Long>() {
             @Override
             public void operationComplete(Future<Long> future) throws Exception {
                 if (!future.isSuccess()) {
                     return;
                 }
-
+                // 获取 key ttl
                 Long ttlRemaining = future.getNow();
                 // lock acquired
                 if (ttlRemaining == null) {
@@ -205,6 +224,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         Timeout task = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
             @Override
             public void run(Timeout timeout) throws Exception {
+                // 续期异步处理续期任务 续期时长 30s
                 Future<Boolean> future = expireAsync(internalLockLeaseTime, TimeUnit.MILLISECONDS);
                 future.addListener(new FutureListener<Boolean>() {
                     @Override
@@ -222,8 +242,10 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                     }
                 });
             }
+            // 该任务 每10秒调度一次 所以说 如果业务上 lock 以后执行时间很长的话，锁也会一直持有，非服务宕机情况下 只有当前线程unlock 才会主动释放锁
         }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
 
+        // 如果需要续期的key集合中没有当前的锁，那么取消调度该任务
         if (expirationRenewalMap.putIfAbsent(getEntryName(), task) != null) {
             task.cancel();
         }
@@ -238,7 +260,13 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
     <T> Future<T> tryLockInnerAsync(long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         internalLockLeaseTime = unit.toMillis(leaseTime);
-
+        log.debug("tryLockInnerAsync leaseTime {} unit {} threadId {} command {}", leaseTime, unit.name(), threadId, command.toString());
+        // lua 脚本的含义
+        /*
+            如果redis key 不存在话：1、创建hash key= 和当前线程相关 value= lock 的次数
+            如果redis key 存在的话: 1、判断 hash 中的item 是否存在 如果存在 value ++ ； redis key续期
+            否则的话: 返回key ttl
+         */
         return commandExecutor.evalWriteAsync(getName(), LongCodec.INSTANCE, command,
                   "if (redis.call('exists', KEYS[1]) == 0) then " +
                       "redis.call('hset', KEYS[1], ARGV[2], 1); " +
