@@ -252,6 +252,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
 
     void cancelExpirationRenewal() {
+        // 删除续期的 看门狗 timer 任务
         Timeout task = expirationRenewalMap.remove(getEntryName());
         if (task != null) {
             task.cancel();
@@ -353,16 +354,24 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         return tryLock(waitTime, -1, unit);
     }
 
+    /**
+     * redisson 释放锁资源的操作
+     * 在删除key 的时候 使用了redis 的发布订阅模式
+     */
     @Override
     public void unlock() {
+
         Boolean opStatus = commandExecutor.evalWrite(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                        // condition1： 将key 不存在的消息发送到指定的通道
                         "if (redis.call('exists', KEYS[1]) == 0) then " +
                             "redis.call('publish', KEYS[2], ARGV[1]); " +
                             "return 1; " +
                         "end;" +
+                        // condition2: 判断hash 表中某个字段是否存在
                         "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
                             "return nil;" +
                         "end; " +
+                        // condition3: 将hash item。val--; 如果val 仍然大于0 设置key 的过期时间；否则 删除key;通知其他订阅线程
                         "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
                         "if (counter > 0) then " +
                             "redis.call('pexpire', KEYS[1], ARGV[2]); " +
